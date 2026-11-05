@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack the project zip (or use the project already in the repo)
+        id: proj
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/unpacked"
+          zip=$(find . -maxdepth 3 -iname '*.zip' -not -path './.git/*' | head -1)
+          if [ -n "$zip" ]; then
+            echo "Unpacking $zip"
+            unzip -q -o "$zip" -d "$RUNNER_TEMP/unpacked"
+            root="$RUNNER_TEMP/unpacked"
+          else
+            echo "No zip in the repository, looking for a Gradle project in the repo itself"
+            root="."
+          fi
+          f=$(find "$root" -name settings.gradle -not -path '*/.git/*' | head -1)
+          if [ -z "$f" ]; then
+            echo "settings.gradle not found. Repository content:"; ls -R . | head -60; exit 1
+          fi
+          d=$(dirname "$f")
+          echo "Gradle project: $d"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Find the newest NeoForge 21.1.x
+        id: neo
+        run: |
+          v=$(curl -fsSL https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml \
+              | grep -oE '<version>21\.1\.[0-9]+</version>' | sed -E 's/<[^>]+>//g' | sort -V | tail -1)
+          echo "Using NeoForge $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build the jar
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: gradle build --no-daemon --stacktrace -Pneo_version=${{ steps.neo.outputs.version }}
+
+      - name: Collect the jar
+        run: |
+          mkdir -p dist
+          cp "${{ steps.proj.outputs.dir }}"/build/libs/*.jar dist/
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: overtone-neoforge-1.21.1
+          path: dist/*.jar
+
+      - name: Publish the jar as a release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Overtone for NeoForge 1.21.1 (build ${{ github.run_number }})
+          files: dist/*.jar
